@@ -2,7 +2,8 @@
  * CerberusAgent — Orchestrator
  *
  * Coordinates the 3 heads in parallel for a single turn.
- * Collects results and passes them to the Body for synthesis.
+ * Each head is physically isolated via ConnectorRegistry:
+ * it only sees and can use its own MCP tools.
  *
  * Pipeline rules (FD-6):
  * - 3 heads in parallel, complete isolation
@@ -10,9 +11,9 @@
  * - Body can send targeted feedback queries on subsequent turns
  */
 
-import { HeadId, HeadReport, TokenUsage } from '../types/index.js';
+import { HeadId, TokenUsage } from '../types/index.js';
 import { AnthropicClient } from '../llm/anthropic-client.js';
-import { ToolExecutor } from './tool-executor.js';
+import { ConnectorRegistry } from '../mcp/connector-registry.js';
 import { runHead, HeadRunResult } from './head-runner.js';
 import { buildSystemBlocks } from '../prompts/prompt-builder.js';
 import { createLogger } from '../llm/logger.js';
@@ -33,18 +34,18 @@ export interface TurnResult {
 export class Orchestrator {
   private config: AppConfig;
   private client: AnthropicClient;
-  private toolExecutor: ToolExecutor;
+  private registry: ConnectorRegistry;
 
-  constructor(config: AppConfig, client: AnthropicClient, toolExecutor: ToolExecutor) {
+  constructor(config: AppConfig, client: AnthropicClient, registry: ConnectorRegistry) {
     this.config = config;
     this.client = client;
-    this.toolExecutor = toolExecutor;
+    this.registry = registry;
   }
 
   /**
    * Execute a single turn of the pipeline.
    *
-   * 1. Dispatch query to 3 heads in parallel
+   * 1. Dispatch query to 3 heads in parallel (each with its own tools)
    * 2. Collect 3 reports
    * 3. Send to Body for synthesis
    * 4. Return unified result
@@ -53,11 +54,15 @@ export class Orchestrator {
     const start = Date.now();
     const heads: HeadId[] = ['rigueur', 'transversalite', 'curiosite'];
 
-    log.info('Turn started', { turn, queryLength: query.length });
+    log.info('Turn started', {
+      turn,
+      queryLength: query.length,
+      connectorSummary: this.registry.getSummary(),
+    });
 
-    // Step 1: Run 3 heads in parallel
+    // Step 1: Run 3 heads in parallel — each with its own isolated tools
     const headPromises = heads.map((headId) =>
-      runHead(headId, query, this.config.models.heads, this.client, this.toolExecutor)
+      runHead(headId, query, this.config.models.heads, this.client, this.registry)
         .catch((error) => {
           log.error('Head failed', { head: headId, error: String(error) });
           return this.createFailedHeadResult(headId, error);
@@ -66,7 +71,6 @@ export class Orchestrator {
 
     const headResults = await Promise.all(headPromises);
 
-    // Index by headId
     const headMap = {} as Record<HeadId, HeadRunResult>;
     for (const result of headResults) {
       headMap[result.headId] = result;
@@ -75,7 +79,7 @@ export class Orchestrator {
     // Step 2: Build Body prompt with head reports
     const bodyPrompt = this.buildBodyPrompt(query, headMap, turn, history);
 
-    // Step 3: Body synthesis
+    // Step 3: Body synthesis (no tools — Body doesn't search)
     const bodySynthesisResponse = await this.client.sendMessage({
       model: this.config.models.body,
       systemBlocks: buildSystemBlocks('body'),
@@ -97,7 +101,6 @@ export class Orchestrator {
       totalUsage.cacheCreationTokens += result.totalTokenUsage.cacheCreationTokens;
     }
 
-    // Simple disagreement detection
     const disagreement = this.detectDisagreement(headMap);
 
     log.info('Turn completed', {
@@ -105,6 +108,9 @@ export class Orchestrator {
       durationMs: Date.now() - start,
       headDurations: Object.fromEntries(
         Object.entries(headMap).map(([k, v]) => [k, v.durationMs])
+      ),
+      toolCalls: Object.fromEntries(
+        Object.entries(headMap).map(([k, v]) => [k, v.toolCallCount])
       ),
       disagreement,
     });
@@ -127,7 +133,6 @@ export class Orchestrator {
     history: string,
   ): string {
     const parts: string[] = [];
-
     parts.push(`## Requ\u00eate du praticien (Tour ${turn})`);
     parts.push(query);
     parts.push('');
@@ -141,7 +146,7 @@ export class Orchestrator {
     for (const headId of ['rigueur', 'transversalite', 'curiosite'] as HeadId[]) {
       const result = heads[headId];
       parts.push(`## Rapport \u2014 T\u00eate ${headId.charAt(0).toUpperCase() + headId.slice(1)}`);
-      parts.push(`Dur\u00e9e: ${result.durationMs}ms | Confiance: ${result.report.niveauConfiance} | N\u00e9ant: ${result.report.neant}`);
+      parts.push(`Dur\u00e9e: ${result.durationMs}ms | Outils appel\u00e9s: ${result.toolCallCount} | Confiance: ${result.report.niveauConfiance} | N\u00e9ant: ${result.report.neant}`);
       parts.push('');
       parts.push(result.rawContent);
       parts.push('');
@@ -155,7 +160,6 @@ export class Orchestrator {
 
   private detectDisagreement(heads: Record<HeadId, HeadRunResult>): boolean {
     const confidences = Object.values(heads).map((h) => h.report.niveauConfiance);
-    // Simple heuristic: disagreement if confidence levels diverge significantly
     const hasHigh = confidences.includes('eleve');
     const hasLow = confidences.includes('faible');
     return hasHigh && hasLow;

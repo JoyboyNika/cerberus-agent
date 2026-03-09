@@ -5,7 +5,7 @@
  * - Cache-aware system blocks (prompt caching)
  * - Token usage tracking
  * - Fallback chain (Opus → Sonnet → Haiku)
- * - Structured error handling
+ * - Raw response access (for tool_use blocks)
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -33,6 +33,14 @@ export interface LlmResponse {
   durationMs: number;
 }
 
+export interface LlmRawResponse {
+  rawContent: Anthropic.ContentBlock[];
+  tokenUsage: TokenUsage;
+  model: string;
+  stopReason: string | null;
+  durationMs: number;
+}
+
 export class AnthropicClient {
   private client: Anthropic;
 
@@ -41,12 +49,30 @@ export class AnthropicClient {
   }
 
   /**
-   * Send a message to Claude with cache-aware system blocks.
-   *
-   * The systemBlocks should come from prompt-builder.ts and
-   * include cache_control markers for prompt caching.
+   * Send a message and get text content back.
+   * Use for Body synthesis and other non-tool-use calls.
    */
   async sendMessage(request: LlmRequest): Promise<LlmResponse> {
+    const raw = await this.sendRaw(request);
+    const content = raw.rawContent
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
+
+    return {
+      content,
+      tokenUsage: raw.tokenUsage,
+      model: raw.model,
+      stopReason: raw.stopReason,
+      durationMs: raw.durationMs,
+    };
+  }
+
+  /**
+   * Send a message and get raw content blocks back.
+   * Use for head-runner agentic loop (needs tool_use blocks).
+   */
+  async sendRaw(request: LlmRequest): Promise<LlmRawResponse> {
     const start = Date.now();
 
     try {
@@ -58,11 +84,6 @@ export class AnthropicClient {
         ...(request.tools && request.tools.length > 0 ? { tools: request.tools } : {}),
       });
 
-      const content = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-        .map((block) => block.text)
-        .join('\n');
-
       const tokenUsage: TokenUsage = {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
@@ -71,19 +92,18 @@ export class AnthropicClient {
       };
 
       return {
-        content,
+        rawContent: response.content,
         tokenUsage,
         model: request.model,
         stopReason: response.stop_reason,
         durationMs: Date.now() - start,
       };
     } catch (error) {
-      // Attempt fallback if rate limited or model unavailable
       if (this.isRetryable(error) && request.model !== FALLBACK_CHAIN[FALLBACK_CHAIN.length - 1]) {
         const nextModel = this.getNextFallback(request.model);
         if (nextModel) {
-          console.warn(`[LLM] Fallback: ${request.model} → ${nextModel} (${this.getErrorCode(error)})`);
-          return this.sendMessage({ ...request, model: nextModel });
+          console.warn(`[LLM] Fallback: ${request.model} \u2192 ${nextModel} (${this.getErrorCode(error)})`);
+          return this.sendRaw({ ...request, model: nextModel });
         }
       }
       throw error;

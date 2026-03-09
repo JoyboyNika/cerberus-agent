@@ -5,19 +5,20 @@
  * an agentic loop: send query → receive response → execute tools → repeat
  * until the head produces a final text response.
  *
- * Each head is isolated: it only sees its own prompt and tools.
+ * Each head is physically isolated: it only receives tools from
+ * its registered MCP connectors (enforced by ConnectorRegistry).
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { HeadId, HeadReport, SystemBlock, TokenUsage } from '../types/index.js';
-import { AnthropicClient, LlmResponse } from '../llm/anthropic-client.js';
-import { ToolExecutor } from './tool-executor.js';
+import { HeadId, HeadReport, TokenUsage } from '../types/index.js';
+import { AnthropicClient } from '../llm/anthropic-client.js';
+import { ConnectorRegistry } from '../mcp/connector-registry.js';
 import { buildSystemBlocks } from '../prompts/prompt-builder.js';
 import { createLogger } from '../llm/logger.js';
 
 const log = createLogger('head-runner');
 
-const MAX_TOOL_ROUNDS = 5;
+const MAX_TOOL_ROUNDS = 8;
 
 export interface HeadRunResult {
   headId: HeadId;
@@ -33,11 +34,19 @@ export async function runHead(
   query: string,
   model: string,
   client: AnthropicClient,
-  toolExecutor: ToolExecutor,
+  registry: ConnectorRegistry,
 ): Promise<HeadRunResult> {
   const start = Date.now();
   const systemBlocks = buildSystemBlocks(headId);
-  const tools = toolExecutor.getAllTools();
+
+  // Physical isolation: each head only gets its own tools
+  const tools = registry.getToolsForHead(headId);
+
+  log.info('Head started', {
+    head: headId,
+    toolCount: tools.length,
+    toolNames: tools.map((t) => t.name),
+  });
 
   const totalUsage: TokenUsage = {
     inputTokens: 0,
@@ -53,12 +62,13 @@ export async function runHead(
   let toolCallCount = 0;
   let finalContent = '';
 
+  // Agentic loop: query → tool_use → tool_result → repeat
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await client.sendMessage({
+    const response = await client.sendRaw({
       model,
       systemBlocks,
       messages,
-      tools,
+      tools: tools.length > 0 ? tools : undefined,
     });
 
     // Accumulate token usage
@@ -67,23 +77,62 @@ export async function runHead(
     totalUsage.cacheReadTokens += response.tokenUsage.cacheReadTokens;
     totalUsage.cacheCreationTokens += response.tokenUsage.cacheCreationTokens;
 
-    // Check if the response contains tool_use blocks
-    // We need to re-parse the raw response for this
-    // For now, if stopReason is 'tool_use', we handle it
-    if (response.stopReason === 'tool_use') {
-      log.info('Head using tools', { head: headId, round });
-      // TODO: In J2 completion, parse tool_use blocks from raw API response
-      // For now, treat as final response
-      finalContent = response.content;
+    // Check for tool_use blocks
+    const toolUseBlocks = response.rawContent.filter(
+      (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+    );
+
+    if (toolUseBlocks.length === 0 || response.stopReason !== 'tool_use') {
+      // Final text response — extract text
+      finalContent = response.rawContent
+        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
       break;
     }
 
-    // Final text response
-    finalContent = response.content;
-    break;
+    // Execute tool calls
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const toolUse of toolUseBlocks) {
+      toolCallCount++;
+      log.info('Tool call', {
+        head: headId,
+        round,
+        tool: toolUse.name,
+        toolCallCount,
+      });
+
+      const result = await registry.executeTool(
+        toolUse.name,
+        toolUse.id,
+        toolUse.input as Record<string, unknown>,
+      );
+
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: result.content,
+        is_error: result.isError || false,
+      });
+    }
+
+    // Append assistant response + tool results to conversation
+    messages = [
+      ...messages,
+      { role: 'assistant', content: response.rawContent },
+      { role: 'user', content: toolResults },
+    ];
   }
 
   const report = parseHeadReport(finalContent, headId);
+
+  log.info('Head completed', {
+    head: headId,
+    toolCallCount,
+    durationMs: Date.now() - start,
+    neant: report.neant,
+    confidence: report.niveauConfiance,
+  });
 
   return {
     headId,
@@ -97,19 +146,17 @@ export async function runHead(
 
 /**
  * Parse the head's text response into a structured HeadReport.
- * Extracts the 6 IMRaD/PRISMA sections.
  */
 function parseHeadReport(content: string, headId: HeadId): HeadReport {
   const sections = {
     objectifRecherche: extractSection(content, '1. Objectif de recherche', '2.'),
-    strategieRecherche: extractSection(content, '2. Strat\u00e9gie de recherche', '3.'),
-    resultats: extractSection(content, '3. R\u00e9sultats', '4.'),
-    synthese: extractSection(content, '4. Synth\u00e8se', '5.'),
+    strategieRecherche: extractSection(content, '2. Strat\'egie de recherche', '3.'),
+    resultats: extractSection(content, '3. R\'esultats', '4.'),
+    synthese: extractSection(content, '4. Synth\`ese', '5.'),
     limitesLacunes: extractSection(content, '5. Limites et lacunes', '6.'),
     niveauConfianceRaw: extractSection(content, '6. Niveau de confiance', ''),
   };
 
-  // Parse confidence level
   const confText = sections.niveauConfianceRaw.toLowerCase();
   let niveauConfiance: 'eleve' | 'modere' | 'faible' = 'modere';
   if (confText.includes('\u00e9lev\u00e9') || confText.includes('eleve') || confText.includes('high')) {
@@ -118,7 +165,6 @@ function parseHeadReport(content: string, headId: HeadId): HeadReport {
     niveauConfiance = 'faible';
   }
 
-  // Detect n\u00e9ant
   const neant = content.toLowerCase().includes('n\u00e9ant') ||
     content.toLowerCase().includes('aucun r\u00e9sultat') ||
     (sections.resultats.trim().length < 50 && sections.resultats.toLowerCase().includes('aucun'));
@@ -135,24 +181,17 @@ function parseHeadReport(content: string, headId: HeadId): HeadReport {
   };
 }
 
-/**
- * Extract text between two section headers.
- */
 function extractSection(content: string, startMarker: string, endMarker: string): string {
   const startIdx = content.indexOf(startMarker);
   if (startIdx === -1) return '';
-
   const afterStart = startIdx + startMarker.length;
   let endIdx = content.length;
-
   if (endMarker) {
-    // Look for the next section header (### N. or ## N.)
     const searchArea = content.slice(afterStart);
     const nextSection = searchArea.search(/###?\s*\d+\./m);
     if (nextSection !== -1) {
       endIdx = afterStart + nextSection;
     }
   }
-
   return content.slice(afterStart, endIdx).trim();
 }
