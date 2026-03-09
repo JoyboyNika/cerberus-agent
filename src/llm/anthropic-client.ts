@@ -5,6 +5,7 @@
  * - Cache-aware system blocks (prompt caching)
  * - Token usage tracking
  * - Fallback chain (Opus → Sonnet → Haiku)
+ * - Context overflow detection (NO fallback on overflow)
  * - Raw response access (for tool_use blocks)
  */
 
@@ -50,7 +51,6 @@ export class AnthropicClient {
 
   /**
    * Send a message and get text content back.
-   * Use for Body synthesis and other non-tool-use calls.
    */
   async sendMessage(request: LlmRequest): Promise<LlmResponse> {
     const raw = await this.sendRaw(request);
@@ -70,7 +70,6 @@ export class AnthropicClient {
 
   /**
    * Send a message and get raw content blocks back.
-   * Use for head-runner agentic loop (needs tool_use blocks).
    */
   async sendRaw(request: LlmRequest): Promise<LlmRawResponse> {
     const start = Date.now();
@@ -99,6 +98,16 @@ export class AnthropicClient {
         durationMs: Date.now() - start,
       };
     } catch (error) {
+      // CRITICAL: Context overflow errors must NOT trigger fallback.
+      // A smaller model has a smaller (or equal) context window,
+      // so falling back would make the problem worse.
+      // Pattern from OpenClaw's model-fallback.ts.
+      if (this.isContextOverflowError(error)) {
+        console.error(`[LLM] Context overflow on ${request.model} \u2014 NOT falling back (smaller model would be worse)`);
+        throw error;
+      }
+
+      // Fallback on retryable errors (rate limit, server error, connection)
       if (this.isRetryable(error) && request.model !== FALLBACK_CHAIN[FALLBACK_CHAIN.length - 1]) {
         const nextModel = this.getNextFallback(request.model);
         if (nextModel) {
@@ -108,6 +117,23 @@ export class AnthropicClient {
       }
       throw error;
     }
+  }
+
+  /**
+   * Detect context overflow errors.
+   * Anthropic returns 400 with specific error messages for context overflow.
+   */
+  private isContextOverflowError(error: unknown): boolean {
+    if (error instanceof Anthropic.BadRequestError) {
+      const message = error.message.toLowerCase();
+      return (
+        message.includes('context') ||
+        message.includes('too many tokens') ||
+        message.includes('maximum context length') ||
+        message.includes('prompt is too long')
+      );
+    }
+    return false;
   }
 
   private isRetryable(error: unknown): boolean {
