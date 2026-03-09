@@ -1,0 +1,26 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    env_file:
+      - .env
+    volumes:
+      - session-data:/app/data/sessions
+    restart: unless-stopped
+
+  cockpit:
+    build:
+      context: ./cockpit
+      dockerfile: Dockerfile
+    ports:
+      - "${COCKPIT_PORT:-5173}:5173"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  session-data:
