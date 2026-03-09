@@ -1,13 +1,13 @@
 /**
- * CerberusAgent \u2014 Gateway Entry Point
+ * CerberusAgent — Gateway Entry Point
  *
- * Jalon 3: Full pipeline with cost tracking and feedback loops.
+ * Jalon 4: Full pipeline with memory system.
  *
  * Endpoints:
- * - GET  /health               \u2192 system status
- * - POST /api/session           \u2192 create consultation
- * - POST /api/session/:id/turn  \u2192 execute one turn
- * - GET  /api/session/:id/cost  \u2192 session cost summary
+ * - GET  /health               → system status
+ * - POST /api/session           → create consultation
+ * - POST /api/session/:id/turn  → execute one turn (with auto sliding window)
+ * - GET  /api/session/:id/cost  → session cost summary
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
@@ -24,35 +24,26 @@ import { AgentId } from './types/index.js';
 
 const log = createLogger('gateway');
 
-// === Initialization ===
-
 function initRegistry(): ConnectorRegistry {
   const registry = new ConnectorRegistry();
-
-  // Rigueur: PubMed with EBM filters
   registry.registerForHead('rigueur', new PubMedConnector([
     '"systematic review"[pt] OR "meta-analysis"[pt] OR "randomized controlled trial"[pt] OR "practice guideline"[pt]',
   ]));
-
-  // Transversalit\u00e9: PubMed with alternative medicine filters
   registry.registerForHead('transversalite', new PubMedConnector([
     '"complementary therapies"[mesh] OR "phytotherapy"[mesh] OR "diet therapy"[mesh] OR "herbal medicine"[mesh]',
   ]));
-
-  // Curiosit\u00e9: OpenAlex (non-medical academic)
   registry.registerForHead('curiosite', new OpenAlexConnector());
-
   log.info('Connector registry initialized', { summary: registry.getSummary() });
   return registry;
 }
 
 function verifyPrompts(): boolean {
-  const agents: AgentId[] = ['body', 'rigueur', 'transversalite', 'curiosite', 'arbitre'];
+  const agents: AgentId[] = ['body', 'rigueur', 'transversalite', 'curiosite', 'arbitre', 'greffier'];
   let ok = true;
   for (const agent of agents) {
     try {
       const blocks = buildSystemBlocks(agent);
-      log.info('Prompt loaded', { agent, chars: blocks[0].text.length, cacheControl: !!blocks[0].cache_control });
+      log.info('Prompt loaded', { agent, chars: blocks[0].text.length });
     } catch (err) {
       log.error('Prompt missing', { agent, error: String(err) });
       ok = false;
@@ -60,8 +51,6 @@ function verifyPrompts(): boolean {
   }
   return ok;
 }
-
-// === HTTP ===
 
 async function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -81,13 +70,12 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
 }
 
 function createRouter(config: AppConfig, orchestrator: Orchestrator) {
-  const sessions = new Map<string, { manager: SessionManager; turn: number; history: string }>();
+  const sessions = new Map<string, { manager: SessionManager; turn: number }>();
 
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url || '';
     const method = req.method || 'GET';
 
-    // CORS preflight
     if (method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
@@ -98,42 +86,38 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
       return;
     }
 
-    // Health check
     if (url === '/health' && method === 'GET') {
       return sendJson(res, 200, {
         status: 'ok',
         service: 'cerberus-agent-gateway',
-        version: '0.2.0',
+        version: '0.3.0',
         timestamp: new Date().toISOString(),
         activeSessions: sessions.size,
       });
     }
 
-    // Create session
     if (url === '/api/session' && method === 'POST') {
       try {
         const body = JSON.parse(await readBody(req));
         const query = body.query as string;
-        if (!query) return sendJson(res, 400, { error: 'Missing "query" field' });
+        if (!query) return sendJson(res, 400, { error: 'Missing "query"' });
 
         const manager = SessionManager.create(config.session.dataDir);
         await manager.startSession(query);
-        sessions.set(manager.sessionId, { manager, turn: 0, history: '' });
+        sessions.set(manager.sessionId, { manager, turn: 0 });
 
-        log.info('Session created', { sessionId: manager.sessionId, query: query.slice(0, 100) });
+        log.info('Session created', { sessionId: manager.sessionId });
         return sendJson(res, 201, { sessionId: manager.sessionId });
-      } catch (error) {
+      } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' });
       }
     }
 
-    // Session cost summary
     const costMatch = url.match(/^\/api\/session\/([^\/]+)\/cost$/);
     if (costMatch && method === 'GET') {
       return sendJson(res, 200, orchestrator.getCostSummary());
     }
 
-    // Execute turn
     const turnMatch = url.match(/^\/api\/session\/([^\/]+)\/turn$/);
     if (turnMatch && method === 'POST') {
       const sessionId = turnMatch[1];
@@ -144,11 +128,8 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
       try {
         const body = JSON.parse(await readBody(req));
         turnQuery = body.query as string || '';
-      } catch {
-        turnQuery = '';
-      }
+      } catch { turnQuery = ''; }
 
-      // For turn 1, use initial session query if none provided
       if (!turnQuery && session.turn === 0) {
         const transcript = session.manager.readTranscript();
         const startEvent = transcript.find((e) => e.type === 'session_start');
@@ -157,17 +138,16 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
       if (!turnQuery) return sendJson(res, 400, { error: 'Missing "query"' });
 
       session.turn++;
-      log.info('Turn starting', { sessionId, turn: session.turn });
 
       try {
-        const result = await orchestrator.executeTurn(turnQuery, session.turn, session.history);
+        // Orchestrator now manages history via SlidingWindowManager
+        const result = await orchestrator.executeTurn(turnQuery, session.turn, session.manager);
 
         // Record events
         await session.manager.append({
           type: 'turn_start', sessionId, timestamp: new Date().toISOString(),
           turn: session.turn, query: turnQuery,
         });
-
         for (const headId of ['rigueur', 'transversalite', 'curiosite'] as const) {
           const hr = result.headResults[headId];
           await session.manager.append({
@@ -176,15 +156,12 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
             tokenUsage: hr.totalTokenUsage, durationMs: hr.durationMs,
           });
         }
-
         await session.manager.append({
           type: 'body_synthesis', sessionId, timestamp: new Date().toISOString(),
           turn: session.turn, response: result.bodySynthesis,
           disagreementDetected: result.disagreementDetected,
           feedbackSent: result.feedbackLoops, recommendContinue: result.recommendContinue,
         });
-
-        session.history += `\n\n--- Tour ${session.turn} ---\n${result.bodySynthesis}`;
 
         const costSummary = orchestrator.getCostSummary();
 
@@ -203,6 +180,7 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
           disagreement: result.disagreementDetected,
           recommendContinue: result.recommendContinue,
           feedbackLoops: result.feedbackLoops,
+          windowSlid: result.windowSlid,
           cost: {
             turnCostUsd: result.costBreakdown.totalCost,
             sessionTotalUsd: costSummary.totalCostUsd,
@@ -219,7 +197,7 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
           turn: session.turn, errorCode: 'TURN_FAILED',
           errorMessage: String(error), recoverable: true,
         });
-        return sendJson(res, 500, { error: 'Turn execution failed', details: String(error) });
+        return sendJson(res, 500, { error: 'Turn failed', details: String(error) });
       }
     }
 
@@ -227,37 +205,27 @@ function createRouter(config: AppConfig, orchestrator: Orchestrator) {
   };
 }
 
-// === Boot ===
-
 async function main() {
   console.log('\n=== CerberusAgent Gateway ===\n');
 
   let config: AppConfig;
-  try {
-    config = loadConfig();
-  } catch (err) {
+  try { config = loadConfig(); } catch (err) {
     log.error('Config error', { error: String(err) });
     process.exit(1);
   }
 
   log.info('Config loaded', {
-    port: config.server.port,
-    node: process.version,
-    modelBody: config.models.body,
-    modelHeads: config.models.heads,
-    modelArbitre: config.models.arbitre,
+    port: config.server.port, modelBody: config.models.body,
+    modelHeads: config.models.heads, modelGreffier: config.models.greffier,
   });
 
-  if (!verifyPrompts()) {
-    log.error('Prompt verification failed');
-    process.exit(1);
-  }
+  if (!verifyPrompts()) { log.error('Prompt verification failed'); process.exit(1); }
 
   const client = new AnthropicClient(config.anthropic.apiKey);
   const registry = initRegistry();
   const orchestrator = new Orchestrator(config, client, registry);
 
-  log.info('Pipeline ready', { heads: 3, connectors: Object.values(registry.getSummary()).flat().length });
+  log.info('Pipeline ready (J4: memory system active)');
 
   const handler = createRouter(config, orchestrator);
   const server = createServer(handler);
@@ -265,17 +233,9 @@ async function main() {
   server.listen(config.server.port, () => {
     log.info('Gateway listening', {
       url: `http://localhost:${config.server.port}`,
-      endpoints: [
-        'GET  /health',
-        'POST /api/session           \u2192 { query }',
-        'POST /api/session/:id/turn  \u2192 { query? }',
-        'GET  /api/session/:id/cost  \u2192 cost summary',
-      ],
+      endpoints: ['GET /health', 'POST /api/session', 'POST /api/session/:id/turn', 'GET /api/session/:id/cost'],
     });
   });
 }
 
-main().catch((err) => {
-  log.error('Fatal error', { error: String(err) });
-  process.exit(1);
-});
+main().catch((err) => { log.error('Fatal', { error: String(err) }); process.exit(1); });
