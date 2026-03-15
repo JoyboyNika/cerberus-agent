@@ -19,11 +19,11 @@ import { createLogger } from '../llm/logger.js';
 
 const log = createLogger('arbitre');
 
-export type ArbitreDecision = 'follow' | 'abandon';
+export type ArbitreDecision = 'follow' | 'abandon' | 'parse_error';
 
 export interface ArbitreResult {
   decision: ArbitreDecision;
-  targetHead: HeadId;
+  targetHead: HeadId | null;
   motivatedReport: string;
   tokenUsage: TokenUsage;
   costUsd: number;
@@ -160,18 +160,36 @@ export class Arbitre {
 
   private parseDecision(content: string, request: ArbitreSaisineRequest): {
     decision: ArbitreDecision;
-    targetHead: HeadId;
+    targetHead: HeadId | null;
     motivatedReport: string;
   } {
+    const contentPreview = content.slice(0, 200);
+
     // Parse DECISION
     const decisionMatch = content.match(/DECISION:\s*(SUIVRE|ABANDONNER)/i);
-    const decision: ArbitreDecision = decisionMatch?.[1]?.toLowerCase() === 'abandonner'
-      ? 'abandon'
-      : 'follow';
+    let decision: ArbitreDecision;
+    if (decisionMatch) {
+      decision = decisionMatch[1].toLowerCase() === 'abandonner' ? 'abandon' : 'follow';
+    } else {
+      log.warn('[arbitre:parse_failure] DECISION field did not match', {
+        field: 'decision',
+        contentPreview,
+      });
+      decision = 'parse_error';
+    }
 
     // Parse TARGET
     const targetMatch = content.match(/TARGET:\s*(rigueur|transversalite|curiosite)/i);
-    const targetHead: HeadId = (targetMatch?.[1]?.toLowerCase() as HeadId) || 'curiosite';
+    let targetHead: HeadId | null;
+    if (targetMatch) {
+      targetHead = targetMatch[1].toLowerCase() as HeadId;
+    } else {
+      log.warn('[arbitre:parse_failure] TARGET field did not match', {
+        field: 'target',
+        contentPreview,
+      });
+      targetHead = null;
+    }
 
     // Parse RAPPORT_MOTIVE
     const reportIdx = content.indexOf('RAPPORT_MOTIVE:');

@@ -22,6 +22,7 @@ export type SessionEventType =
   | 'user_instruction'
   | 'arbitre_saisine'
   | 'arbitre_decision'
+  | 'arbitre_parse_failure'
   | 'greffier_distillation'
   | 'window_slide'
   | 'session_end'
@@ -105,6 +106,13 @@ export interface ArbitreDecisionEvent extends BaseEvent {
   tokenUsage: TokenUsage;
 }
 
+export interface ArbitreParseFailureEvent extends BaseEvent {
+  type: 'arbitre_parse_failure';
+  turn: number;
+  failedFields: Array<'decision' | 'target'>;
+  contentPreview: string;
+}
+
 export interface GreffierDistillationEvent extends BaseEvent {
   type: 'greffier_distillation';
   afterTurn: number;
@@ -147,6 +155,7 @@ export type SessionEvent =
   | UserInstructionEvent
   | ArbitreSaisineEvent
   | ArbitreDecisionEvent
+  | ArbitreParseFailureEvent
   | GreffierDistillationEvent
   | WindowSlideEvent
   | SessionEndEvent
