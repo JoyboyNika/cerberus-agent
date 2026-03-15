@@ -143,21 +143,36 @@ export class Orchestrator {
           totalCost: arbitreResult.costUsd,
         });
 
-        // Record arbitre events
+        // Record arbitre saisine event
         await sessionManager.append({
           type: 'arbitre_saisine', sessionId: sessionManager.sessionId,
           timestamp: new Date().toISOString(), turn,
           reason: saisineRequest.reason,
           headReports: saisineRequest.headReports,
         });
-        await sessionManager.append({
-          type: 'arbitre_decision', sessionId: sessionManager.sessionId,
-          timestamp: new Date().toISOString(), turn,
-          decision: arbitreResult.decision,
-          motivatedReport: arbitreResult.motivatedReport,
-          targetHead: arbitreResult.targetHead,
-          tokenUsage: arbitreResult.tokenUsage,
-        });
+
+        // Check for parse failures
+        const failedFields: Array<'decision' | 'target'> = [];
+        if (arbitreResult.decision === 'parse_error') failedFields.push('decision');
+        if (arbitreResult.targetHead === null) failedFields.push('target');
+
+        if (failedFields.length > 0) {
+          await sessionManager.append({
+            type: 'arbitre_parse_failure', sessionId: sessionManager.sessionId,
+            timestamp: new Date().toISOString(), turn,
+            failedFields,
+            contentPreview: arbitreResult.motivatedReport.slice(0, 200),
+          });
+        } else {
+          await sessionManager.append({
+            type: 'arbitre_decision', sessionId: sessionManager.sessionId,
+            timestamp: new Date().toISOString(), turn,
+            decision: arbitreResult.decision as 'follow' | 'abandon',
+            motivatedReport: arbitreResult.motivatedReport,
+            targetHead: arbitreResult.targetHead as HeadId,
+            tokenUsage: arbitreResult.tokenUsage,
+          });
+        }
       } catch (error) {
         log.error('Arbitre invocation failed', { error: String(error) });
       }
@@ -178,10 +193,14 @@ export class Orchestrator {
       }
     }
 
-    // Re-synthesize if feedback or arbitre
-    if (feedbackLoops.length > 0 || arbitreInvoked) {
+    // Re-synthesize if feedback or usable arbitre decision
+    const arbitreUsable = arbitreResult
+      && arbitreResult.decision !== 'parse_error'
+      && arbitreResult.targetHead !== null;
+
+    if (feedbackLoops.length > 0 || arbitreUsable) {
       let updatedPrompt = this.buildBodyPrompt(query, headMap, turn, history, []);
-      if (arbitreResult) {
+      if (arbitreUsable && arbitreResult) {
         updatedPrompt += `\n\n## Décision de l'Arbitre\nDécision : ${arbitreResult.decision.toUpperCase()}\nTête concernée : ${arbitreResult.targetHead}\n\n${arbitreResult.motivatedReport}`;
       }
       const updatedResponse = await this.client.sendMessage({
