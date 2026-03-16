@@ -102,6 +102,21 @@ export class Orchestrator {
     const headMap = {} as Record<HeadId, HeadRunResult>;
     for (const result of headResults) headMap[result.headId] = result;
 
+    // Step 1b: Emit parse failure events for heads with incomplete parsing
+    for (const result of headResults) {
+      if (result.parsedSectionCount < 5) {
+        await sessionManager.append({
+          type: 'head_report_parse_failure',
+          sessionId: sessionManager.sessionId,
+          timestamp: new Date().toISOString(),
+          turn,
+          head: result.headId,
+          parsedSectionCount: result.parsedSectionCount,
+          missingSections: result.missingSections,
+        });
+      }
+    }
+
     // Step 2: Néant detection
     const neantReformulations: Array<{ head: HeadId; originalNeant: boolean }> = [];
     for (const headId of heads) {
@@ -298,8 +313,13 @@ export class Orchestrator {
     for (const headId of ['rigueur', 'transversalite', 'curiosite'] as HeadId[]) {
       const r = heads[headId];
       parts.push(`## Rapport — ${headId}`);
-      parts.push(`Outils: ${r.toolCallCount} | Confiance: ${r.report.niveauConfiance} | Néant: ${r.report.neant}${r.loopDetected ? ' | \u26a0 Boucle' : ''}`);
-      parts.push(r.rawContent);
+      parts.push(`Outils: ${r.toolCallCount} | Confiance: ${r.report.niveauConfiance} | Néant: ${r.report.neant}${r.loopDetected ? ' | ⚠ Boucle' : ''}${r.parsedSectionCount < 5 ? ` | ⚠ Parsing partiel (${r.parsedSectionCount}/5 sections)` : ''}`);
+      if (r.report.rawFallback) {
+        parts.push('⚠ PARSING ÉCHOUÉ — Texte brut de la tête ci-dessous :');
+        parts.push(r.report.rawFallback);
+      } else {
+        parts.push(r.rawContent);
+      }
       parts.push('');
     }
 
@@ -333,10 +353,12 @@ export class Orchestrator {
         resultats: '(Erreur)', synthese: `Erreur: ${String(error)}`,
         limitesLacunes: '(Erreur)', niveauConfiance: 'faible',
         niveauConfianceJustification: 'Erreur technique', neant: true,
+        rawFallback: null,
       },
       rawContent: `[ERROR] ${String(error)}`,
       totalTokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
       durationMs: 0, toolCallCount: 0, loopDetected: false,
+      parsedSectionCount: 0, missingSections: [],
     };
   }
 }

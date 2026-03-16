@@ -28,6 +28,8 @@ export interface HeadReport {
   niveauConfiance: 'eleve' | 'modere' | 'faible';
   niveauConfianceJustification: string;
   neant: boolean;
+  /** Raw LLM content used as fallback when parsing fails completely (parsedSectionCount === 0). */
+  rawFallback: string | null;
 }
 
 // === Token usage tracking ===

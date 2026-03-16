@@ -17,6 +17,7 @@ export type SessionEventType =
   | 'turn_start'
   | 'head_dispatch'
   | 'head_report'
+  | 'head_report_parse_failure'
   | 'body_synthesis'
   | 'body_feedback'
   | 'user_instruction'
@@ -64,6 +65,14 @@ export interface HeadReportEvent extends BaseEvent {
   report: HeadReport;
   tokenUsage: TokenUsage;
   durationMs: number;
+}
+
+export interface HeadReportParseFailureEvent extends BaseEvent {
+  type: 'head_report_parse_failure';
+  turn: number;
+  head: HeadId;
+  parsedSectionCount: number;
+  missingSections: string[];
 }
 
 export interface BodySynthesisEvent extends BaseEvent {
@@ -150,6 +159,7 @@ export type SessionEvent =
   | TurnStartEvent
   | HeadDispatchEvent
   | HeadReportEvent
+  | HeadReportParseFailureEvent
   | BodySynthesisEvent
   | BodyFeedbackEvent
   | UserInstructionEvent
