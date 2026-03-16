@@ -158,46 +158,8 @@ export class Arbitre {
     return parts.join('\n');
   }
 
-  private parseDecision(content: string, request: ArbitreSaisineRequest): {
-    decision: ArbitreDecision;
-    targetHead: HeadId | null;
-    motivatedReport: string;
-  } {
-    const contentPreview = content.slice(0, 200);
-
-    // Parse DECISION
-    const decisionMatch = content.match(/DECISION:\s*(SUIVRE|ABANDONNER)/i);
-    let decision: ArbitreDecision;
-    if (decisionMatch) {
-      decision = decisionMatch[1].toLowerCase() === 'abandonner' ? 'abandon' : 'follow';
-    } else {
-      log.warn('[arbitre:parse_failure] DECISION field did not match', {
-        field: 'decision',
-        contentPreview,
-      });
-      decision = 'parse_error';
-    }
-
-    // Parse TARGET
-    const targetMatch = content.match(/TARGET:\s*(rigueur|transversalite|curiosite)/i);
-    let targetHead: HeadId | null;
-    if (targetMatch) {
-      targetHead = targetMatch[1].toLowerCase() as HeadId;
-    } else {
-      log.warn('[arbitre:parse_failure] TARGET field did not match', {
-        field: 'target',
-        contentPreview,
-      });
-      targetHead = null;
-    }
-
-    // Parse RAPPORT_MOTIVE
-    const reportIdx = content.indexOf('RAPPORT_MOTIVE:');
-    const motivatedReport = reportIdx !== -1
-      ? content.slice(reportIdx + 'RAPPORT_MOTIVE:'.length).trim()
-      : content;
-
-    return { decision, targetHead, motivatedReport };
+  private parseDecision(content: string, request: ArbitreSaisineRequest) {
+    return parseArbitreDecision(content);
   }
 
   /**
@@ -210,4 +172,47 @@ export class Arbitre {
       remaining: this.maxSaisinesPerSession - this.saisineCount,
     };
   }
+}
+
+/** Exported for testing. */
+export function parseArbitreDecision(content: string): {
+  decision: ArbitreDecision;
+  targetHead: HeadId | null;
+  motivatedReport: string;
+} {
+  const contentPreview = content.slice(0, 200);
+
+  // Parse DECISION
+  const decisionMatch = content.match(/DECISION:\s*(SUIVRE|ABANDONNER)/i);
+  let decision: ArbitreDecision;
+  if (decisionMatch) {
+    decision = decisionMatch[1].toLowerCase() === 'abandonner' ? 'abandon' : 'follow';
+  } else {
+    log.warn('[arbitre:parse_failure] DECISION field did not match', {
+      field: 'decision',
+      contentPreview,
+    });
+    decision = 'parse_error';
+  }
+
+  // Parse TARGET
+  const targetMatch = content.match(/TARGET:\s*(rigueur|transversalite|curiosite)/i);
+  let targetHead: HeadId | null;
+  if (targetMatch) {
+    targetHead = targetMatch[1].toLowerCase() as HeadId;
+  } else {
+    log.warn('[arbitre:parse_failure] TARGET field did not match', {
+      field: 'target',
+      contentPreview,
+    });
+    targetHead = null;
+  }
+
+  // Parse RAPPORT_MOTIVE
+  const reportIdx = content.indexOf('RAPPORT_MOTIVE:');
+  const motivatedReport = reportIdx !== -1
+    ? content.slice(reportIdx + 'RAPPORT_MOTIVE:'.length).trim()
+    : content;
+
+  return { decision, targetHead, motivatedReport };
 }

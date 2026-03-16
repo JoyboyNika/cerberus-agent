@@ -29,6 +29,8 @@ export interface HeadRunResult {
   durationMs: number;
   toolCallCount: number;
   loopDetected: boolean;
+  parsedSectionCount: number;
+  missingSections: string[];
 }
 
 export async function runHead(
@@ -142,7 +144,7 @@ export async function runHead(
     }
   }
 
-  const report = parseHeadReport(finalContent, headId);
+  const { report, parsedSectionCount, missingSections } = parseHeadReport(finalContent, headId);
 
   log.info('Head completed', {
     head: headId,
@@ -151,6 +153,7 @@ export async function runHead(
     neant: report.neant,
     confidence: report.niveauConfiance,
     loopDetected,
+    parsedSectionCount,
     loopStats: loopDetector.getStats(),
   });
 
@@ -162,44 +165,83 @@ export async function runHead(
     durationMs: Date.now() - start,
     toolCallCount,
     loopDetected,
+    parsedSectionCount,
+    missingSections,
   };
 }
 
-function parseHeadReport(content: string, headId: HeadId): HeadReport {
-  const sections = {
-    objectifRecherche: extractSection(content, 'Objectif de recherche'),
-    strategieRecherche: extractSection(content, 'Strat\u00e9gie de recherche'),
-    resultats: extractSection(content, 'R\u00e9sultats'),
-    synthese: extractSection(content, 'Synth\u00e8se'),
-    limitesLacunes: extractSection(content, 'Limites et lacunes'),
-    niveauConfianceRaw: extractSection(content, 'Niveau de confiance'),
-  };
+export interface ParsedHeadReport {
+  report: HeadReport;
+  parsedSectionCount: number;
+  missingSections: string[];
+}
 
-  const confText = sections.niveauConfianceRaw.toLowerCase();
+/** Exported for testing. */
+export function parseHeadReport(content: string, headId: HeadId): ParsedHeadReport {
+  const sectionDefs: Array<{ key: string; label: string }> = [
+    { key: 'objectifRecherche', label: 'Objectif de recherche' },
+    { key: 'strategieRecherche', label: 'Stratégie de recherche' },
+    { key: 'resultats', label: 'Résultats' },
+    { key: 'synthese', label: 'Synthèse' },
+    { key: 'limitesLacunes', label: 'Limites et lacunes' },
+  ];
+
+  const extracted: Record<string, string> = {};
+  const missingSections: string[] = [];
+
+  for (const { key, label } of sectionDefs) {
+    const value = extractSection(content, label);
+    extracted[key] = value;
+    if (!value) {
+      missingSections.push(label);
+    }
+  }
+
+  const niveauConfianceRaw = extractSection(content, 'Niveau de confiance');
+  const parsedSectionCount = sectionDefs.length - missingSections.length;
+
+  if (parsedSectionCount < 5) {
+    log.warn('[head-runner:parse_partial] Report sections missing', {
+      headId,
+      parsedSectionCount,
+      missingSections,
+    });
+  }
+
+  const confText = niveauConfianceRaw.toLowerCase();
   let niveauConfiance: 'eleve' | 'modere' | 'faible' = 'modere';
-  if (confText.includes('\u00e9lev\u00e9') || confText.includes('eleve') || confText.includes('high')) {
+  if (confText.includes('élevé') || confText.includes('eleve') || confText.includes('high')) {
     niveauConfiance = 'eleve';
   } else if (confText.includes('faible') || confText.includes('low')) {
     niveauConfiance = 'faible';
   }
 
-  const neant = content.toLowerCase().includes('n\u00e9ant') ||
-    content.toLowerCase().includes('aucun r\u00e9sultat') ||
-    (sections.resultats.trim().length < 50 && sections.resultats.toLowerCase().includes('aucun'));
+  const neant = content.toLowerCase().includes('néant') ||
+    content.toLowerCase().includes('aucun résultat') ||
+    (extracted.resultats.trim().length < 50 && extracted.resultats.toLowerCase().includes('aucun'));
+
+  // Total parse failure: provide raw content as fallback for the Body
+  const rawFallback = parsedSectionCount === 0 ? content : null;
 
   return {
-    objectifRecherche: sections.objectifRecherche || '(Section non trouv\u00e9e)',
-    strategieRecherche: sections.strategieRecherche || '(Section non trouv\u00e9e)',
-    resultats: sections.resultats || '(Section non trouv\u00e9e)',
-    synthese: sections.synthese || '(Section non trouv\u00e9e)',
-    limitesLacunes: sections.limitesLacunes || '(Section non trouv\u00e9e)',
-    niveauConfiance,
-    niveauConfianceJustification: sections.niveauConfianceRaw || '(Non sp\u00e9cifi\u00e9)',
-    neant,
+    report: {
+      objectifRecherche: extracted.objectifRecherche || '(Section non trouvée)',
+      strategieRecherche: extracted.strategieRecherche || '(Section non trouvée)',
+      resultats: extracted.resultats || '(Section non trouvée)',
+      synthese: extracted.synthese || '(Section non trouvée)',
+      limitesLacunes: extracted.limitesLacunes || '(Section non trouvée)',
+      niveauConfiance,
+      niveauConfianceJustification: niveauConfianceRaw || '(Non spécifié)',
+      neant,
+      rawFallback,
+    },
+    parsedSectionCount,
+    missingSections,
   };
 }
 
-function extractSection(content: string, sectionName: string): string {
+/** Exported for testing. */
+export function extractSection(content: string, sectionName: string): string {
   // Match "### N. Section Name" or "## N. Section Name"
   const regex = new RegExp(`###?\\s*\\d+\\.\\s*${sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\n([\\s\\S]*?)(?=###?\\s*\\d+\\.|$)`, 'i');
   const match = content.match(regex);

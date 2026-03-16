@@ -97,7 +97,7 @@ export class PubMedConnector extends McpConnector {
 
     // Step 1: ESearch to get PMIDs
     const searchUrl = `${EUTILS_BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(fullQuery)}&retmax=${clampedMax}&retmode=json&sort=relevance`;
-    const searchRes = await fetch(searchUrl);
+    const searchRes = await this.fetchWithTimeout(searchUrl);
     const searchData = await searchRes.json() as any;
 
     const pmids: string[] = searchData.esearchresult?.idlist || [];
@@ -108,7 +108,7 @@ export class PubMedConnector extends McpConnector {
 
     // Step 2: ESummary for brief info
     const summaryUrl = `${EUTILS_BASE}/esummary.fcgi?db=pubmed&id=${pmids.join(',')}&retmode=json`;
-    const summaryRes = await fetch(summaryUrl);
+    const summaryRes = await this.fetchWithTimeout(summaryUrl);
     const summaryData = await summaryRes.json() as any;
 
     const results = pmids.map((pmid) => {
@@ -134,7 +134,7 @@ export class PubMedConnector extends McpConnector {
     log.info('PubMed fetch abstract', { pmid });
 
     const url = `${EUTILS_BASE}/efetch.fcgi?db=pubmed&id=${pmid}&retmode=xml`;
-    const res = await fetch(url);
+    const res = await this.fetchWithTimeout(url);
     const xml = await res.text();
 
     // Simple XML parsing for abstract (no dependency needed)

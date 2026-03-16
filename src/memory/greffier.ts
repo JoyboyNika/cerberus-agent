@@ -64,13 +64,54 @@ export class Greffier {
     this.costEstimator.recordCall('greffier', this.model, response.tokenUsage);
 
     // Parse the response into an ArchiveReport
-    const report = this.parseDistillationResponse(
+    const { report, filledSectionCount } = this.parseDistillationResponse(
       response.content,
       sessionManager.sessionId,
       afterTurn,
     );
 
-    // Save to archive
+    // Guard: do not overwrite archive with an empty report
+    if (filledSectionCount === 0) {
+      log.warn('[greffier:parse_failure] Distillation produced empty report, archive preserved', {
+        sessionId: sessionManager.sessionId,
+        afterTurn,
+        filledSectionCount,
+        contentPreview: response.content.slice(0, 200),
+      });
+
+      await sessionManager.append({
+        type: 'greffier_parse_failure',
+        sessionId: sessionManager.sessionId,
+        timestamp: new Date().toISOString(),
+        afterTurn,
+        filledSectionCount,
+        contentPreview: response.content.slice(0, 200),
+      });
+
+      // Return existing report if available, otherwise the empty one
+      const existing = this.archive.load(sessionManager.sessionId);
+      return existing || report;
+    }
+
+    if (filledSectionCount <= 1) {
+      log.warn('[greffier:parse_failure] Distillation produced near-empty report', {
+        sessionId: sessionManager.sessionId,
+        afterTurn,
+        filledSectionCount,
+        contentPreview: response.content.slice(0, 200),
+      });
+
+      await sessionManager.append({
+        type: 'greffier_parse_failure',
+        sessionId: sessionManager.sessionId,
+        timestamp: new Date().toISOString(),
+        afterTurn,
+        filledSectionCount,
+        contentPreview: response.content.slice(0, 200),
+      });
+    }
+
+    // Save to archive (only reached when filledSectionCount > 0)
     this.archive.save(report);
 
     // Record event in session
@@ -86,6 +127,7 @@ export class Greffier {
     log.info('Distillation completed', {
       sessionId: sessionManager.sessionId,
       afterTurn,
+      filledSectionCount,
       chapters: report.chapters.length,
       decisions: report.decisions.length,
       openQuestions: report.openQuestions.length,
@@ -175,42 +217,65 @@ export class Greffier {
     return parts.join('\n');
   }
 
-  private parseDistillationResponse(
-    content: string,
-    sessionId: string,
-    afterTurn: number,
-  ): ArchiveReport {
-    // Parse EXECUTIVE_SUMMARY
-    const execSummary = this.extractBlock(content, 'EXECUTIVE_SUMMARY:', 'DECISIONS:') || '(Non distillé)';
+  private parseDistillationResponse(content: string, sessionId: string, afterTurn: number) {
+    return parseDistillationResponse(content, sessionId, afterTurn);
+  }
 
-    // Parse DECISIONS
-    const decisionsBlock = this.extractBlock(content, 'DECISIONS:', 'OPEN_QUESTIONS:') || '';
-    const decisions = decisionsBlock
-      .split('\n')
-      .map(l => l.replace(/^-\s*/, '').trim())
-      .filter(l => l.length > 0);
+  private extractBlock(content: string, startMarker: string, endMarker: string): string {
+    return extractBlock(content, startMarker, endMarker);
+  }
+}
 
-    // Parse OPEN_QUESTIONS
-    const questionsBlock = this.extractBlock(content, 'OPEN_QUESTIONS:', 'CHAPTER:') || '';
-    const openQuestions = questionsBlock
-      .split('\n')
-      .map(l => l.replace(/^-\s*/, '').trim())
-      .filter(l => l.length > 0);
+/** Exported for testing. */
+export function extractBlock(content: string, startMarker: string, endMarker: string): string {
+  const startIdx = content.indexOf(startMarker);
+  if (startIdx === -1) return '';
+  const afterStart = startIdx + startMarker.length;
+  const endIdx = endMarker ? content.indexOf(endMarker, afterStart) : content.length;
+  return content.slice(afterStart, endIdx === -1 ? content.length : endIdx).trim();
+}
 
-    // Parse CHAPTERS
-    const chapters: ArchiveChapter[] = [];
-    const chapterRegex = /CHAPTER:\s*(.+?)\nSOURCES:\s*(.+?)\nTAGS:\s*(.+?)\n([\s\S]*?)(?=CHAPTER:|$)/gi;
-    let match;
-    while ((match = chapterRegex.exec(content)) !== null) {
-      chapters.push({
-        title: match[1].trim(),
-        sources: match[2].split(',').map(s => s.trim()),
-        tags: match[3].split(',').map(t => t.trim()),
-        content: match[4].trim(),
-      });
-    }
+/** Exported for testing. */
+export function parseDistillationResponse(
+  content: string,
+  sessionId: string,
+  afterTurn: number,
+): { report: ArchiveReport; filledSectionCount: number } {
+  const execSummaryRaw = extractBlock(content, 'EXECUTIVE_SUMMARY:', 'DECISIONS:');
+  const execSummary = execSummaryRaw || '(Non distillé)';
 
-    return {
+  const decisionsBlock = extractBlock(content, 'DECISIONS:', 'OPEN_QUESTIONS:') || '';
+  const decisions = decisionsBlock
+    .split('\n')
+    .map(l => l.replace(/^-\s*/, '').trim())
+    .filter(l => l.length > 0);
+
+  const questionsBlock = extractBlock(content, 'OPEN_QUESTIONS:', 'CHAPTER:') || '';
+  const openQuestions = questionsBlock
+    .split('\n')
+    .map(l => l.replace(/^-\s*/, '').trim())
+    .filter(l => l.length > 0);
+
+  const chapters: ArchiveChapter[] = [];
+  const chapterRegex = /CHAPTER:\s*(.+?)\nSOURCES:\s*(.+?)\nTAGS:\s*(.+?)\n([\s\S]*?)(?=CHAPTER:|$)/gi;
+  let match;
+  while ((match = chapterRegex.exec(content)) !== null) {
+    chapters.push({
+      title: match[1].trim(),
+      sources: match[2].split(',').map(s => s.trim()),
+      tags: match[3].split(',').map(t => t.trim()),
+      content: match[4].trim(),
+    });
+  }
+
+  let filledSectionCount = 0;
+  if (execSummaryRaw) filledSectionCount++;
+  if (decisions.length > 0) filledSectionCount++;
+  if (openQuestions.length > 0) filledSectionCount++;
+  if (chapters.length > 0) filledSectionCount++;
+
+  return {
+    report: {
       sessionId,
       lastUpdatedAt: new Date().toISOString(),
       afterTurn,
@@ -219,14 +284,7 @@ export class Greffier {
       chapters,
       openQuestions,
       decisions,
-    };
-  }
-
-  private extractBlock(content: string, startMarker: string, endMarker: string): string {
-    const startIdx = content.indexOf(startMarker);
-    if (startIdx === -1) return '';
-    const afterStart = startIdx + startMarker.length;
-    const endIdx = endMarker ? content.indexOf(endMarker, afterStart) : content.length;
-    return content.slice(afterStart, endIdx === -1 ? content.length : endIdx).trim();
-  }
+    },
+    filledSectionCount,
+  };
 }

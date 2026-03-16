@@ -46,6 +46,8 @@ export class SlidingWindowManager {
 
   // Slide at 60% of context window (FD-6)
   private slideThresholdPercent = 60;
+  // Timeout for Body verification of Greffier report
+  private bodyVerificationTimeoutMs = 60_000;
 
   constructor(
     client: AnthropicClient,
@@ -114,8 +116,8 @@ export class SlidingWindowManager {
     const report = await this.greffier.distill(sessionManager, currentTurn);
     const distilledBlock = Archive.toContextBlock(report);
 
-    // Step 2: Body verification (garde-fou FD-6)
-    const verified = await this.bodyVerification(distilledBlock, currentTurn);
+    // Step 2: Body verification (garde-fou FD-6) with timeout
+    const { content: verified, timedOut } = await this.bodyVerificationWithTimeout(distilledBlock, currentTurn);
 
     // Step 3: Replace history
     const fromTurn = this.state.lastSlideTurn + 1;
@@ -145,7 +147,41 @@ export class SlidingWindowManager {
       newHistoryTokens: estimateTokens(this.state.currentHistory),
     });
 
-    return { distilledContext: verified, verified: true };
+    return { distilledContext: verified, verified: !timedOut };
+  }
+
+  /**
+   * Body verification with timeout.
+   * On timeout, returns the Greffier's report unverified rather than blocking.
+   */
+  private async bodyVerificationWithTimeout(
+    distilledBlock: string,
+    currentTurn: number,
+  ): Promise<{ content: string; timedOut: boolean }> {
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('BODY_VERIFICATION_TIMEOUT')), this.bodyVerificationTimeoutMs),
+    );
+
+    try {
+      const content = await Promise.race([
+        this.bodyVerification(distilledBlock, currentTurn),
+        timeoutPromise,
+      ]);
+      return { content, timedOut: false };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'BODY_VERIFICATION_TIMEOUT') {
+        log.warn('[sliding-window:body_verification_timeout]', {
+          currentTurn,
+          timeoutMs: this.bodyVerificationTimeoutMs,
+          message: 'Body verification timed out, using Greffier report unverified',
+        });
+        return {
+          content: `[NON VÉRIFIÉ PAR LE BODY — timeout]\n\n${distilledBlock}`,
+          timedOut: true,
+        };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -160,17 +196,17 @@ export class SlidingWindowManager {
     const verificationPrompt = [
       '## Vérification du rapport du Greffier',
       '',
-      'Le Greffier a distill\u00e9 les tours pr\u00e9c\u00e9dents en ce rapport :',
+      'Le Greffier a distillé les tours précédents en ce rapport :',
       '',
       distilledBlock,
       '',
       '## Instructions',
-      'V\u00e9rifie ce rapport. Corrige les erreurs factuelles ou les omissions importantes.',
-      'Si le rapport est fid\u00e8le, retourne-le tel quel.',
-      'Si tu corriges, retourne la version corrig\u00e9e compl\u00e8te.',
+      'Vérifie ce rapport. Corrige les erreurs factuelles ou les omissions importantes.',
+      'Si le rapport est fidèle, retourne-le tel quel.',
+      'Si tu corriges, retourne la version corrigée complète.',
       'Ne retire aucune information — ajoute ou corrige seulement.',
       '',
-      'IMPORTANT : Retourne UNIQUEMENT le rapport (pas de commentaires avant/apr\u00e8s).',
+      'IMPORTANT : Retourne UNIQUEMENT le rapport (pas de commentaires avant/après).',
     ].join('\n');
 
     const response = await this.client.sendMessage({

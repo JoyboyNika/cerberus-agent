@@ -98,7 +98,7 @@ export class OpenAlexConnector extends McpConnector {
       url += '&filter=concepts.id:!C71924100,concepts.id:!C126322002';
     }
 
-    const res = await fetch(url);
+    const res = await this.fetchWithTimeout(url);
     const data = await res.json() as any;
 
     const works = data.results || [];
@@ -135,7 +135,7 @@ export class OpenAlexConnector extends McpConnector {
     log.info('OpenAlex get work', { workId });
 
     const url = `${OPENALEX_BASE}/works/${workId}?mailto=${MAILTO}`;
-    const res = await fetch(url);
+    const res = await this.fetchWithTimeout(url);
     const w = await res.json() as any;
 
     if (!w.title) {

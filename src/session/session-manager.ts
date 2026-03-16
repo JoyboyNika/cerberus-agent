@@ -8,13 +8,15 @@
  * to Cockpit (J6) and Greffier (J4).
  */
 
-import { createWriteStream, mkdirSync, readFileSync, existsSync, WriteStream } from 'fs';
+import { createWriteStream, mkdirSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync, WriteStream } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import { createLogger } from '../llm/logger.js';
 import { SessionEvent, SessionStartEvent, SessionEndEvent } from './types.js';
 import { emitTranscriptUpdate } from './transcript-emitter.js';
 
 const DEFAULT_DATA_DIR = process.env.SESSION_DATA_DIR || './data/sessions';
+const log = createLogger('session-manager');
 
 export class SessionManager {
   readonly sessionId: string;
@@ -121,5 +123,40 @@ export class SessionManager {
     return new Promise((resolve) => {
       this.writeStream.end(resolve);
     });
+  }
+
+  /**
+   * Delete session JSONL files older than maxAgeDays.
+   * Call at server boot to prevent unbounded disk growth.
+   */
+  static cleanExpiredSessions(maxAgeDays: number = 30, dataDir: string = DEFAULT_DATA_DIR): number {
+    if (!existsSync(dataDir)) return 0;
+
+    const now = Date.now();
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const files = readdirSync(dataDir).filter(f => f.endsWith('.jsonl'));
+    let deleted = 0;
+
+    for (const file of files) {
+      const filePath = join(dataDir, file);
+      try {
+        const stat = statSync(filePath);
+        if (now - stat.mtimeMs > maxAgeMs) {
+          unlinkSync(filePath);
+          deleted++;
+        }
+      } catch {
+        // Skip files that can't be stat'd or deleted
+      }
+    }
+
+    log.info('[session:cleanup]', {
+      dataDir,
+      maxAgeDays,
+      scanned: files.length,
+      deleted,
+    });
+
+    return deleted;
   }
 }

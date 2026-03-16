@@ -17,6 +17,7 @@ export type SessionEventType =
   | 'turn_start'
   | 'head_dispatch'
   | 'head_report'
+  | 'head_report_parse_failure'
   | 'body_synthesis'
   | 'body_feedback'
   | 'user_instruction'
@@ -24,6 +25,7 @@ export type SessionEventType =
   | 'arbitre_decision'
   | 'arbitre_parse_failure'
   | 'greffier_distillation'
+  | 'greffier_parse_failure'
   | 'window_slide'
   | 'session_end'
   | 'error';
@@ -64,6 +66,14 @@ export interface HeadReportEvent extends BaseEvent {
   report: HeadReport;
   tokenUsage: TokenUsage;
   durationMs: number;
+}
+
+export interface HeadReportParseFailureEvent extends BaseEvent {
+  type: 'head_report_parse_failure';
+  turn: number;
+  head: HeadId;
+  parsedSectionCount: number;
+  missingSections: string[];
 }
 
 export interface BodySynthesisEvent extends BaseEvent {
@@ -113,6 +123,13 @@ export interface ArbitreParseFailureEvent extends BaseEvent {
   contentPreview: string;
 }
 
+export interface GreffierParseFailureEvent extends BaseEvent {
+  type: 'greffier_parse_failure';
+  afterTurn: number;
+  filledSectionCount: number;
+  contentPreview: string;
+}
+
 export interface GreffierDistillationEvent extends BaseEvent {
   type: 'greffier_distillation';
   afterTurn: number;
@@ -150,12 +167,14 @@ export type SessionEvent =
   | TurnStartEvent
   | HeadDispatchEvent
   | HeadReportEvent
+  | HeadReportParseFailureEvent
   | BodySynthesisEvent
   | BodyFeedbackEvent
   | UserInstructionEvent
   | ArbitreSaisineEvent
   | ArbitreDecisionEvent
   | ArbitreParseFailureEvent
+  | GreffierParseFailureEvent
   | GreffierDistillationEvent
   | WindowSlideEvent
   | SessionEndEvent
