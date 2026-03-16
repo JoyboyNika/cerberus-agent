@@ -217,69 +217,74 @@ export class Greffier {
     return parts.join('\n');
   }
 
-  private parseDistillationResponse(
-    content: string,
-    sessionId: string,
-    afterTurn: number,
-  ): { report: ArchiveReport; filledSectionCount: number } {
-    // Parse EXECUTIVE_SUMMARY
-    const execSummaryRaw = this.extractBlock(content, 'EXECUTIVE_SUMMARY:', 'DECISIONS:');
-    const execSummary = execSummaryRaw || '(Non distillé)';
-
-    // Parse DECISIONS
-    const decisionsBlock = this.extractBlock(content, 'DECISIONS:', 'OPEN_QUESTIONS:') || '';
-    const decisions = decisionsBlock
-      .split('\n')
-      .map(l => l.replace(/^-\s*/, '').trim())
-      .filter(l => l.length > 0);
-
-    // Parse OPEN_QUESTIONS
-    const questionsBlock = this.extractBlock(content, 'OPEN_QUESTIONS:', 'CHAPTER:') || '';
-    const openQuestions = questionsBlock
-      .split('\n')
-      .map(l => l.replace(/^-\s*/, '').trim())
-      .filter(l => l.length > 0);
-
-    // Parse CHAPTERS
-    const chapters: ArchiveChapter[] = [];
-    const chapterRegex = /CHAPTER:\s*(.+?)\nSOURCES:\s*(.+?)\nTAGS:\s*(.+?)\n([\s\S]*?)(?=CHAPTER:|$)/gi;
-    let match;
-    while ((match = chapterRegex.exec(content)) !== null) {
-      chapters.push({
-        title: match[1].trim(),
-        sources: match[2].split(',').map(s => s.trim()),
-        tags: match[3].split(',').map(t => t.trim()),
-        content: match[4].trim(),
-      });
-    }
-
-    // Count filled sections
-    let filledSectionCount = 0;
-    if (execSummaryRaw) filledSectionCount++;
-    if (decisions.length > 0) filledSectionCount++;
-    if (openQuestions.length > 0) filledSectionCount++;
-    if (chapters.length > 0) filledSectionCount++;
-
-    return {
-      report: {
-        sessionId,
-        lastUpdatedAt: new Date().toISOString(),
-        afterTurn,
-        executiveSummary: execSummary,
-        tableOfContents: chapters.map(c => c.title),
-        chapters,
-        openQuestions,
-        decisions,
-      },
-      filledSectionCount,
-    };
+  private parseDistillationResponse(content: string, sessionId: string, afterTurn: number) {
+    return parseDistillationResponse(content, sessionId, afterTurn);
   }
 
   private extractBlock(content: string, startMarker: string, endMarker: string): string {
-    const startIdx = content.indexOf(startMarker);
-    if (startIdx === -1) return '';
-    const afterStart = startIdx + startMarker.length;
-    const endIdx = endMarker ? content.indexOf(endMarker, afterStart) : content.length;
-    return content.slice(afterStart, endIdx === -1 ? content.length : endIdx).trim();
+    return extractBlock(content, startMarker, endMarker);
   }
+}
+
+/** Exported for testing. */
+export function extractBlock(content: string, startMarker: string, endMarker: string): string {
+  const startIdx = content.indexOf(startMarker);
+  if (startIdx === -1) return '';
+  const afterStart = startIdx + startMarker.length;
+  const endIdx = endMarker ? content.indexOf(endMarker, afterStart) : content.length;
+  return content.slice(afterStart, endIdx === -1 ? content.length : endIdx).trim();
+}
+
+/** Exported for testing. */
+export function parseDistillationResponse(
+  content: string,
+  sessionId: string,
+  afterTurn: number,
+): { report: ArchiveReport; filledSectionCount: number } {
+  const execSummaryRaw = extractBlock(content, 'EXECUTIVE_SUMMARY:', 'DECISIONS:');
+  const execSummary = execSummaryRaw || '(Non distillé)';
+
+  const decisionsBlock = extractBlock(content, 'DECISIONS:', 'OPEN_QUESTIONS:') || '';
+  const decisions = decisionsBlock
+    .split('\n')
+    .map(l => l.replace(/^-\s*/, '').trim())
+    .filter(l => l.length > 0);
+
+  const questionsBlock = extractBlock(content, 'OPEN_QUESTIONS:', 'CHAPTER:') || '';
+  const openQuestions = questionsBlock
+    .split('\n')
+    .map(l => l.replace(/^-\s*/, '').trim())
+    .filter(l => l.length > 0);
+
+  const chapters: ArchiveChapter[] = [];
+  const chapterRegex = /CHAPTER:\s*(.+?)\nSOURCES:\s*(.+?)\nTAGS:\s*(.+?)\n([\s\S]*?)(?=CHAPTER:|$)/gi;
+  let match;
+  while ((match = chapterRegex.exec(content)) !== null) {
+    chapters.push({
+      title: match[1].trim(),
+      sources: match[2].split(',').map(s => s.trim()),
+      tags: match[3].split(',').map(t => t.trim()),
+      content: match[4].trim(),
+    });
+  }
+
+  let filledSectionCount = 0;
+  if (execSummaryRaw) filledSectionCount++;
+  if (decisions.length > 0) filledSectionCount++;
+  if (openQuestions.length > 0) filledSectionCount++;
+  if (chapters.length > 0) filledSectionCount++;
+
+  return {
+    report: {
+      sessionId,
+      lastUpdatedAt: new Date().toISOString(),
+      afterTurn,
+      executiveSummary: execSummary,
+      tableOfContents: chapters.map(c => c.title),
+      chapters,
+      openQuestions,
+      decisions,
+    },
+    filledSectionCount,
+  };
 }

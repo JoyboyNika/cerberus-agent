@@ -170,13 +170,14 @@ export async function runHead(
   };
 }
 
-interface ParsedHeadReport {
+export interface ParsedHeadReport {
   report: HeadReport;
   parsedSectionCount: number;
   missingSections: string[];
 }
 
-function parseHeadReport(content: string, headId: HeadId): ParsedHeadReport {
+/** Exported for testing. */
+export function parseHeadReport(content: string, headId: HeadId): ParsedHeadReport {
   const sectionDefs: Array<{ key: string; label: string }> = [
     { key: 'objectifRecherche', label: 'Objectif de recherche' },
     { key: 'strategieRecherche', label: 'Stratégie de recherche' },
@@ -239,7 +240,8 @@ function parseHeadReport(content: string, headId: HeadId): ParsedHeadReport {
   };
 }
 
-function extractSection(content: string, sectionName: string): string {
+/** Exported for testing. */
+export function extractSection(content: string, sectionName: string): string {
   // Match "### N. Section Name" or "## N. Section Name"
   const regex = new RegExp(`###?\\s*\\d+\\.\\s*${sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\n([\\s\\S]*?)(?=###?\\s*\\d+\\.|$)`, 'i');
   const match = content.match(regex);

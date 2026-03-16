@@ -169,6 +169,9 @@ async function main() {
   log.info('Config loaded', { port: config.server.port, modelBody: config.models.body, modelHeads: config.models.heads });
   if (!verifyPrompts()) { log.error('Prompt verification failed'); process.exit(1); }
 
+  // Clean expired sessions at boot
+  SessionManager.cleanExpiredSessions(30, config.session.dataDir);
+
   const client = new AnthropicClient(config.anthropic.apiKey);
   const registry = initRegistry();
   const orchestrator = new Orchestrator(config, client, registry);
