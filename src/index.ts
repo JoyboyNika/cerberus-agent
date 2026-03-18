@@ -10,6 +10,8 @@ import { AnthropicClient } from './llm/anthropic-client.js';
 import { ConnectorRegistry } from './mcp/connector-registry.js';
 import { PubMedConnector } from './mcp/pubmed-connector.js';
 import { OpenAlexConnector } from './mcp/openAlex-connector.js';
+import { ClinicalTrialsConnector } from './mcp/clinicaltrials-connector.js';
+import { OpenTargetsConnector } from './mcp/opentargets-connector.js';
 import { Orchestrator } from './gateway/orchestrator.js';
 import { initWebSocketServer } from './gateway/websocket-server.js';
 import { SessionManager } from './session/session-manager.js';
@@ -27,6 +29,8 @@ function initRegistry(): ConnectorRegistry {
   registry.registerForHead('transversalite', new PubMedConnector([
     '"complementary therapies"[mesh] OR "phytotherapy"[mesh] OR "diet therapy"[mesh] OR "herbal medicine"[mesh]',
   ]));
+  registry.registerForHead('transversalite', new ClinicalTrialsConnector());
+  registry.registerForHead('transversalite', new OpenTargetsConnector());
   registry.registerForHead('curiosite', new OpenAlexConnector());
   log.info('Connector registry initialized', { summary: registry.getSummary() });
   return registry;
