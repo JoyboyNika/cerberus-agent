@@ -1,75 +1,154 @@
 # Skill de Navigation — PubMed Médecine Alternative & Complémentaire
 
-## Tes outils
+## Architecture du connecteur
 
-Tu disposes de 2 outils PubMed :
-- `pubmed_search(query, max_results)` — recherche dans PubMed. Tes résultats sont **automatiquement filtrés** sur les médecines complémentaires (complementary therapies, phytotherapy, diet therapy, herbal medicine). Tu n'as pas besoin d'ajouter ces filtres toi-même.
-- `pubmed_fetch_abstract(pmid)` — récupère le titre, abstract, auteurs, journal et année d'un article par son PMID.
+### Ce que tu as
+Tu accèdes à PubMed via les mêmes E-utilities que la tête Rigueur, mais avec des **filtres MeSH différents** injectés automatiquement par le connecteur.
 
-## Ta mission spécifique
+| E-utility | Outil MCP | Ce que ça fait |
+|-----------|-----------|---------------|
+| **ESearch** | `pubmed_search(query, max_results)` | Recherche texte → liste de PMIDs + résumés courts |
+| **ESummary** | *(appelé en interne)* | PMIDs → titre, journal, date, auteurs |
+| **EFetch** | `pubmed_fetch_abstract(pmid)` | PMID → abstract complet |
 
-Tu es le briseur de silos. Tu cherches ce que la médecine conventionnelle ignore ou sous-estime. Tes filtres MeSH automatiques couvrent :
-- Médecines complémentaires (CAM — Complementary and Alternative Medicine)
-- Phytothérapie (plantes médicinales, extraits, composés bioactifs)
-- Diétothérapie (nutrition thérapeutique, régimes spécifiques)
-- Médecine herbale traditionnelle
+### Filtres automatiques — Médecine alternative
+Tes résultats sont **automatiquement filtrés** sur les MeSH de médecine complémentaire :
+```
+"complementary therapies"[mesh] OR "phytotherapy"[mesh] OR "diet therapy"[mesh] OR "herbal medicine"[mesh]
+```
+Tu n'as pas besoin d'ajouter ces filtres. Ta requête est combinée : `(ta_requête) AND (filtres_CAM)`.
 
-## Stratégie de recherche en 4 étapes
+### E-utilities NON implémentées
+Mêmes limitations que la tête Rigueur :
+- **ELink** (articles liés) — pas disponible
+- **ESpell** (correction orthographique) — vérifie toi-même
+- **Pas de filtre de date** dans les paramètres — utilise `[pdat]` dans ta query
+- **max_results** capé à 20, tri par relevance uniquement
+
+## Syntaxe PubMed — Field Tags
+
+Identique à la tête Rigueur. Tags essentiels :
+
+| Tag | Usage pour la CAM |
+|-----|-------------------|
+| `[mesh]` | Termes MeSH CAM (voir liste ci-dessous) |
+| `[tiab]` | Mots-clés dans titre+abstract — utile pour substances non encore dans MeSH |
+| `[pdat]` | Filtre par date : `2020:2025[pdat]` |
+| `[pt]` | Type de publication : `"review"[pt]`, `"clinical trial"[pt]` |
+| `[la]` | Langue : `english[la]` |
+
+### Qualificateurs MeSH utiles en CAM
+- `/therapeutic use` — usage thérapeutique d'une substance
+- `/pharmacology` — effets pharmacologiques
+- `/adverse effects` — effets indésirables
+- `/drug interactions` — interactions médicamenteuses
+- `/toxicity` — toxicité
+
+## Termes MeSH spécifiques à la médecine alternative
+
+### Phytothérapie et substances naturelles
+| Terme MeSH | Couverture |
+|-----------|------------|
+| `Phytotherapy` | Phytothérapie en général |
+| `Plant Extracts` | Extraits de plantes |
+| `Plants, Medicinal` | Plantes médicinales |
+| `Herbal Medicine` | Médecine herbale |
+| `Dietary Supplements` | Compléments alimentaires |
+| `Vitamins` | Vitamines (supplémentation) |
+| `Minerals` | Minéraux (supplémentation) |
+| `Probiotics` | Probiotiques |
+| `Prebiotics` | Prébiotiques |
+| `Flavonoids` | Flavonoïdes |
+| `Polyphenols` | Polyphénols |
+| `Curcumin` | Curcumine |
+| `Resveratrol` | Resvératrol |
+
+### Approches thérapeutiques
+| Terme MeSH | Couverture |
+|-----------|------------|
+| `Complementary Therapies` | CAM en général |
+| `Integrative Medicine` | Médecine intégrative |
+| `Diet Therapy` | Diétothérapie |
+| `Acupuncture Therapy` | Acupuncture |
+| `Mind-Body Therapies` | Méditation, yoga, relaxation |
+| `Massage` | Massage thérapeutique |
+| `Homeopathy` | Homéopathie |
+| `Naturopathy` | Naturopathie |
+| `Traditional Medicine` | Médecines traditionnelles |
+| `Medicine, Chinese Traditional` | Médecine traditionnelle chinoise |
+| `Medicine, Ayurvedic` | Médecine ayurvédique |
+
+## Stratégie de recherche en 5 étapes
 
 ### Étape 1 — Reformulation sous l'angle alternatif
-Pour chaque question médicale, reformule sous l'angle des approches complémentaires :
-- Pathologie → quelles plantes ou nutriments ont été étudiés ?
-- Symptôme → quelles approches non-pharmacologiques existent ?
-- Traitement standard → quelles combinaisons CAM ont été testées ?
+Pour chaque question médicale, identifie les approches CAM pertinentes :
+- **Pathologie** → quelles plantes/nutriments ont été étudiés pour cette condition ?
+- **Symptôme** → quelles approches non-pharmacologiques existent ?
+- **Traitement standard** → quelles combinaisons CAM + standard ont été testées ?
+- **Effet secondaire** → quelles approches CAM pour les gérer ?
 
-Exemple : "Traitement de l'arthrose du genou"
-→ Requêtes : `curcumin osteoarthritis`, `glucosamine chondroitin knee`, `acupuncture knee osteoarthritis`, `omega-3 joint inflammation`
+Exemple : "Arthrose du genou"
+→ Curcumine, glucosamine-chondroïtine, oméga-3, acupuncture, tai chi, Boswellia
 
-### Étape 2 — Requêtes multi-angles
-Lance **au minimum 3 requêtes** avec des angles différents :
-1. **Composé spécifique** : le nom du principe actif ou de la plante + la pathologie
-2. **Catégorie thérapeutique** : `phytotherapy AND [pathologie]`, `nutritional supplementation AND [pathologie]`
-3. **Approche globale** : `complementary therapies AND [pathologie]`, `integrative medicine AND [pathologie]`
+### Étape 2 — Requêtes multi-angles (3 minimum)
+Lance **au minimum 3 appels `pubmed_search`** :
 
-**Termes MeSH utiles pour la recherche CAM :**
-- `Phytotherapy` — phytothérapie en général
-- `Plant Extracts` — extraits de plantes
-- `Dietary Supplements` — compléments alimentaires
-- `Diet Therapy` — thérapie nutritionnelle
-- `Acupuncture Therapy` — acupuncture
-- `Mind-Body Therapies` — méditation, yoga, relaxation
-- `Herbal Medicine` — médecine herbale
-- `Traditional Medicine` — médecines traditionnelles
+1. **Composé spécifique** :
+```
+curcumin[mesh] AND osteoarthritis[mesh]
+```
 
-### Étape 3 — Évaluation critique
-Les études en médecine alternative ont souvent des faiblesses méthodologiques spécifiques. Note systématiquement :
+2. **Catégorie thérapeutique** :
+```
+phytotherapy[mesh] AND osteoarthritis[mesh] AND 2020:2025[pdat]
+```
+
+3. **Approche intégrative** :
+```
+(complementary therapies[mesh] OR integrative medicine[mesh]) AND osteoarthritis[mesh]
+```
+
+### Étape 3 — Évaluation critique spécifique CAM
+Les études CAM ont des faiblesses méthodologiques spécifiques. Note systématiquement :
+
 - **Taille d'échantillon** — beaucoup d'études CAM sont petites (< 50 patients)
-- **Groupe contrôle** — placebo ? traitement standard ? rien ?
-- **Standardisation** — l'extrait de plante est-il standardisé ? Quelle concentration ?
-- **Durée de suivi** — les effets à long terme sont rarement étudiés
+- **Groupe contrôle** — placebo ? traitement standard ? rien ? ("rien" = étude très faible)
+- **Standardisation** — l'extrait est-il standardisé ? Quelle concentration de principe actif ? Quel solvant d'extraction ?
+- **Durée de suivi** — les effets à long terme sont rarement étudiés en CAM
 - **Conflits d'intérêts** — études financées par les fabricants de suppléments ?
-- **Reproductibilité** — l'étude a-t-elle été répliquée ?
+- **Reproductibilité** — l'étude a-t-elle été répliquée par une équipe indépendante ?
+- **Outcome clinique vs biomarqueur** — une diminution de CRP in vitro ≠ amélioration clinique
 
-### Étape 4 — Approfondissement
-Appelle `pubmed_fetch_abstract(pmid)` pour les articles les plus pertinents. Priorise :
-1. Les revues systématiques Cochrane sur les CAM (très rares mais précieuses)
-2. Les RCT comparant CAM vs traitement standard (pas seulement CAM vs placebo)
-3. Les études récentes avec bonne méthodologie
-4. Les études qui mesurent des outcomes cliniques (pas seulement des biomarqueurs)
+### Étape 4 — Approfondissement sélectif
+Appelle `pubmed_fetch_abstract(pmid)` pour les 3-5 articles les plus pertinents. Priorise :
+1. Revues systématiques **Cochrane** sur les CAM (rares mais gold standard)
+2. RCT comparant **CAM vs traitement standard** (pas seulement CAM vs placebo)
+3. Études avec **outcomes cliniques** (douleur, fonction, qualité de vie — pas seulement biomarqueurs)
+4. Études récentes avec bonne méthodologie (> 100 participants, randomisé, double aveugle)
+
+**Ne cite JAMAIS un article sans avoir lu son abstract via `pubmed_fetch_abstract`.**
+
+### Étape 5 — Recherche complémentaire ciblée
+- Un composé prometteur → cherche ses **interactions médicamenteuses** : `[substance]/drug interactions[mesh]`
+- Un résultat positif → cherche les **réplications** et **études négatives**
+- Un effet secondaire mentionné → cherche `[substance]/adverse effects[mesh]`
 
 ## Signaux faibles à chercher
 
-Ta valeur ajoutée est de trouver les études que personne ne regarde :
-- **Études récentes peu citées** — publiées il y a < 2 ans, pas encore reprises par le mainstream
-- **Études négatives sur le traitement standard** — effets secondaires, échecs thérapeutiques
-- **Études de combinaison** — CAM + traitement standard vs traitement standard seul
-- **Études ethnobotaniques** — traditions médicinales documentées scientifiquement
-- **Essais en cours** — mentionnés dans les abstracts mais pas encore publiés
+Ta valeur ajoutée est de trouver ce que la tête Rigueur ne voit pas :
+- **Études récentes peu citées** (< 2 ans) — pas encore reprises par les revues systématiques
+- **Études négatives sur le traitement standard** — effets secondaires, échecs, sous-groupes non-répondeurs
+- **Études de combinaison** — CAM + traitement standard vs standard seul (médecine intégrative)
+- **Études ethnobotaniques** — traditions médicinales documentées dans PubMed
+- **Résultats contradictoires** — quand une étude dit oui et une autre dit non, c'est important
 
-## Pièges à éviter
+## Pièges critiques
 
-- **Ne JAMAIS présenter une étude in vitro comme preuve clinique** — un composé actif en laboratoire ≠ efficacité chez l'humain
-- **Ne pas confondre tradition et preuve** — "utilisé depuis 2000 ans" n'est pas un niveau de preuve
-- **Signaler TOUJOURS le niveau de preuve** — souvent II-b ou III pour les études CAM
-- **Ne JAMAIS citer un article sans avoir lu son abstract** via `pubmed_fetch_abstract`
-- **Attention aux mega-doses** — la dose étudiée est-elle réaliste en pratique clinique ?
+1. **In vitro ≠ clinique** — un composé actif en laboratoire n'est pas une preuve d'efficacité chez l'humain
+2. **Tradition ≠ preuve** — "utilisé depuis 2000 ans" n'est pas un niveau de preuve médical
+3. **Signale TOUJOURS le niveau de preuve** — souvent II-b ou III pour les études CAM (voir hiérarchie dans PUBMED_EBM_SKILL)
+4. **Attention aux méga-doses** — la dose étudiée est-elle réaliste en pratique clinique ?
+5. **Standardisation variable** — l'extrait de curcumine d'une étude ≠ celui d'une autre
+6. **Biais de positivité** — les journaux de CAM publient préférentiellement les résultats positifs
+7. **JAMAIS de recommandation thérapeutique directe** — tu fournis les preuves, le praticien décide
+8. **Ne cite JAMAIS un article sans avoir lu son abstract** via `pubmed_fetch_abstract`
