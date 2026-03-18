@@ -14,6 +14,8 @@ import { ClinicalTrialsConnector } from './mcp/clinicaltrials-connector.js';
 import { OpenTargetsConnector } from './mcp/opentargets-connector.js';
 import { SemanticScholarConnector } from './mcp/semantic-scholar-connector.js';
 import { FoodDataConnector } from './mcp/fooddata-connector.js';
+import { CoreConnector } from './mcp/core-connector.js';
+import { CrossrefConnector } from './mcp/crossref-connector.js';
 import { Orchestrator } from './gateway/orchestrator.js';
 import { initWebSocketServer } from './gateway/websocket-server.js';
 import { SessionManager } from './session/session-manager.js';
@@ -36,6 +38,8 @@ function initRegistry(): ConnectorRegistry {
   registry.registerForHead('transversalite', new FoodDataConnector());
   registry.registerForHead('curiosite', new OpenAlexConnector());
   registry.registerForHead('curiosite', new SemanticScholarConnector());
+  registry.registerForHead('curiosite', new CoreConnector());
+  registry.registerForHead('curiosite', new CrossrefConnector());
   log.info('Connector registry initialized', { summary: registry.getSummary() });
   return registry;
 }
