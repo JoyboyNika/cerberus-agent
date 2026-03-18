@@ -24,8 +24,16 @@ const PROMPT_FILES: Record<AgentId, string> = {
   greffier: 'GREFFIER.md', // Placeholder — Jalon 4
 };
 
+// Mapping: head → skill files to inject as additional system blocks
+const HEAD_SKILLS: Partial<Record<AgentId, string[]>> = {
+  rigueur: ['PUBMED_EBM_SKILL.md'],
+  transversalite: ['PUBMED_ALTMED_SKILL.md', 'CLINICALTRIALS_SKILL.md', 'FOODDATA_SKILL.md', 'OPENTARGETS_SKILL.md'],
+  curiosite: ['OPENALEX_SKILL.md', 'SEMANTIC_SCHOLAR_SKILL.md', 'CORE_SKILL.md', 'CROSSREF_SKILL.md'],
+};
+
 // In-memory cache: prompts are static during runtime
 const cache = new Map<AgentId, string>();
+const skillCache = new Map<string, string>();
 
 /**
  * Load and cache a prompt file from disk.
@@ -40,25 +48,52 @@ function loadPromptText(agentId: AgentId): string {
 }
 
 /**
+ * Load and cache a skill file from disk.
+ */
+function loadSkillText(skillFile: string): string {
+  if (!skillCache.has(skillFile)) {
+    const filePath = join(__dirname, 'skills', skillFile);
+    const content = readFileSync(filePath, 'utf-8');
+    skillCache.set(skillFile, content);
+  }
+  return skillCache.get(skillFile)!;
+}
+
+/**
  * Build Anthropic system message blocks for a given agent.
  *
  * Returns an array of SystemBlock objects compatible with:
  *   anthropic.messages.create({ system: [...blocks] })
  *
- * The .md content is marked with cache_control for Anthropic's
+ * Heads with skills receive N+1 blocks (prompt + skill blocks).
+ * Body, Arbitre, Greffier receive 1 block (prompt only).
+ *
+ * Each block is marked with cache_control for Anthropic's
  * prompt caching. On cache hit, these tokens don't count toward
  * ITPM rate limits.
  */
 export function buildSystemBlocks(agentId: AgentId): SystemBlock[] {
   const promptText = loadPromptText(agentId);
 
-  return [
+  const blocks: SystemBlock[] = [
     {
       type: 'text',
       text: promptText,
       cache_control: { type: 'ephemeral' },
     },
   ];
+
+  const skills = HEAD_SKILLS[agentId] || [];
+  for (const skillFile of skills) {
+    const skillText = loadSkillText(skillFile);
+    blocks.push({
+      type: 'text',
+      text: skillText,
+      cache_control: { type: 'ephemeral' },
+    });
+  }
+
+  return blocks;
 }
 
 /**
@@ -73,4 +108,5 @@ export function getPromptText(agentId: AgentId): string {
  */
 export function clearPromptCache(): void {
   cache.clear();
+  skillCache.clear();
 }

@@ -139,7 +139,7 @@ export class PubMedConnector extends McpConnector {
 
     // Simple XML parsing for abstract (no dependency needed)
     const title = this.extractXml(xml, 'ArticleTitle');
-    const abstract = this.extractXml(xml, 'AbstractText');
+    const abstract = this.extractAllAbstractSections(xml);
     const journal = this.extractXml(xml, 'Title');
     const year = this.extractXml(xml, 'Year');
 
@@ -159,6 +159,25 @@ export class PubMedConnector extends McpConnector {
         abstract || '(No abstract available)',
       ].join('\n'),
     };
+  }
+
+  /**
+   * Extract all <AbstractText> sections, preserving labels for structured abstracts.
+   * Structured abstracts (e.g. systematic reviews) have multiple <AbstractText Label="..."> tags.
+   * Non-structured abstracts have a single <AbstractText> tag without label.
+   */
+  private extractAllAbstractSections(xml: string): string {
+    const regex = /<AbstractText(?:\s+Label="([^"]*)")?[^>]*>(.*?)<\/AbstractText>/gs;
+    const sections: string[] = [];
+
+    for (const match of xml.matchAll(regex)) {
+      const label = match[1];
+      const text = match[2].replace(/<[^>]+>/g, '').trim();
+      if (!text) continue;
+      sections.push(label ? `${label}: ${text}` : text);
+    }
+
+    return sections.join('\n\n');
   }
 
   private extractXml(xml: string, tag: string): string {
